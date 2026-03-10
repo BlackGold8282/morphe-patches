@@ -89,6 +89,7 @@ private val spoofVideoStreamsRawResourcePatch = rawResourcePatch {
                 "meriyah-6.1.4.min.js",
                 "polyfill.js",
                 "yt.solver.core.js", // yt-dlp-ejs 0.5.0: https://github.com/yt-dlp/ejs/releases/tag/0.5.0
+                "yt.solver.wrapper.js"
             )
         )
 

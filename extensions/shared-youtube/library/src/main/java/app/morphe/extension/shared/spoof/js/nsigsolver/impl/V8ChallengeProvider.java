@@ -121,13 +121,20 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
                 // The V8 runtime is reset every time the execution count exceeds 12
                 //
                 // Note: There is a delay of approximately 100-200ms when the runtime is regenerated
+                // FIXME: V8 throws ReferenceError complaining about setPreprocessedPlayer being missing
+                //  after the runtime is reset for some reason. This needs to be investigated.
+                //  We can also bump up the execution count threshold before resetting, since payload lengths
+                //  are much shorter than before with the player caching change.
+                /*
                 if (executeCount > 12 && !warmup && !v8Runtime.isReleased()) {
                     v8Runtime.lowMemoryNotification();
                     v8Runtime.release(false);
                     v8Runtime = null;
                     executeCount = 0;
+                    resetLoadedPlayerState();
                     Logger.printDebug(() -> "Close the V8 runtime");
                 }
+                */
                 executeCount++;
 
                 return result;
@@ -179,31 +186,35 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
         if (v8Executor.isShutdown() || v8Executor.isTerminated()) {
             try {
                 v8Executor = Executors.newSingleThreadExecutor();
+                executeCount = 0;
+                resetLoadedPlayerState();
             } catch (Exception ex) {
                 Logger.printException(() -> "Failed to create V8 executor", ex);
             }
         }
 
-        try {
-            long constructStart = System.nanoTime();
-            String commonStdin = constructCommonStdin();
-            long constructMs = (System.nanoTime() - constructStart) / 1_000_000;
-            final int stdinLen = commonStdin.length();
+        if (executeCount == 0) {
+            try {
+                long constructStart = System.nanoTime();
+                String commonStdin = constructCommonStdin();
+                long constructMs = (System.nanoTime() - constructStart) / 1_000_000;
+                final int stdinLen = commonStdin.length();
 
-            long jsStart = System.nanoTime();
-            // Declare a global function
-            runJS(commonStdin, true);
-            long jsMs = (System.nanoTime() - jsStart) / 1_000_000;
+                long jsStart = System.nanoTime();
+                // Declare a global function
+                runJS(commonStdin, true);
+                long jsMs = (System.nanoTime() - jsStart) / 1_000_000;
 
-            long totalMs = (System.nanoTime() - warmupStart) / 1_000_000;
-            Logger.printDebug(() -> String.format(Locale.US,
-                    "[Perf] warmup #%d: constructCommonStdin=%dms (len=%d), runJS=%dms, totalTime=%dms",
-                    warmupNum, constructMs, stdinLen, jsMs, totalMs));
-        } catch (Exception e) {
-            long totalMs = (System.nanoTime() - warmupStart) / 1_000_000;
-            Logger.printDebug(() -> String.format(Locale.US,
-                    "[Perf] warmup #%d failed after %dms", warmupNum, totalMs));
-            // ignore warmup errors
+                long totalMs = (System.nanoTime() - warmupStart) / 1_000_000;
+                Logger.printDebug(() -> String.format(Locale.US,
+                        "[Perf] warmup #%d: constructCommonStdin=%dms (len=%d), runJS=%dms, totalTime=%dms",
+                        warmupNum, constructMs, stdinLen, jsMs, totalMs));
+            } catch (Exception e) {
+                long totalMs = (System.nanoTime() - warmupStart) / 1_000_000;
+                Logger.printDebug(() -> String.format(Locale.US,
+                        "[Perf] warmup #%d failed after %dms", warmupNum, totalMs));
+                // ignore warmup errors
+            }
         }
     }
 }
