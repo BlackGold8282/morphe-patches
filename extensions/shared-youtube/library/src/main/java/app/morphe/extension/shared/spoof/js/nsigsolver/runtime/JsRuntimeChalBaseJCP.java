@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import app.morphe.extension.shared.Logger;
@@ -35,6 +36,9 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
 
     private Script libScript;
     private Script coreScript;
+
+    // Performance instrumentation
+    private int bulkSolveCallCount = 0;
 
     // LRU Cache equivalent
     protected final Map<String, String> cache = Collections.synchronizedMap(
@@ -75,8 +79,11 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
     @Override
     protected List<JsChallengeProviderResponse> realBulkSolve(List<JsChallengeRequest> requests) {
         List<JsChallengeProviderResponse> responses = new ArrayList<>();
+        final int solveCallNum = ++bulkSolveCallCount;
+        final long totalStart = System.nanoTime();
 
         try {
+            long t0 = System.nanoTime();
             CachedData data = cacheService.get(CACHE_SECTION, "player:" + playerJSHash);
             String player = (data != null) ? data.getCode() : null;
             boolean cached;
@@ -87,10 +94,21 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
                 player = playerJS;
                 cached = false;
             }
+            long cacheCheckMs = (System.nanoTime() - t0) / 1_000_000;
+            final boolean cachedFinal = cached;
+            final int playerLen = player != null ? player.length() : 0;
 
+            long stdinStart = System.nanoTime();
             String stdin = constructStdin(player, cached, requests);
-            String stdout = runJsRuntime(stdin);
+            long stdinMs = (System.nanoTime() - stdinStart) / 1_000_000;
+            final int stdinLen = stdin.length();
 
+            long jsStart = System.nanoTime();
+            String stdout = runJsRuntime(stdin);
+            long jsMs = (System.nanoTime() - jsStart) / 1_000_000;
+            final int stdoutLen = stdout != null ? stdout.length() : 0;
+
+            long parseStart = System.nanoTime();
             Gson gson = new Gson();
             SolverOutput output;
             try {
@@ -99,6 +117,13 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
                 Logger.printException(() -> "Cannot parse solver output", ex);
                 throw new JsChallengeProviderError("Cannot parse solver output", ex);
             }
+            long parseMs = (System.nanoTime() - parseStart) / 1_000_000;
+
+            Logger.printDebug(() -> String.format(Locale.US,
+                    "[Perf] realBulkSolve #%d: requests=%d, playerCached=%s, playerLen=%d, " +
+                    "cacheCheck=%dms, constructStdin=%dms (stdinLen=%d), runJsRuntime=%dms (stdoutLen=%d), parseOutput=%dms",
+                    solveCallNum, requests.size(), cachedFinal, playerLen,
+                    cacheCheckMs, stdinMs, stdinLen, jsMs, stdoutLen, parseMs));
 
             if ("error".equals(output.getType())) {
                 String message = output.getError() != null ? output.getError() : "Unknown solver output error";
@@ -138,6 +163,12 @@ public abstract class JsRuntimeChalBaseJCP extends JsChallengeProvider {
             }
             Logger.printException(() -> "BulkSolve failed", ex);
         }
+
+        long totalMs = (System.nanoTime() - totalStart) / 1_000_000;
+        final int responseCount = responses.size();
+        Logger.printDebug(() -> String.format(Locale.US,
+                "[Perf] realBulkSolve #%d complete: totalTime=%dms, responses=%d",
+                solveCallNum, totalMs, responseCount));
 
         return responses;
     }

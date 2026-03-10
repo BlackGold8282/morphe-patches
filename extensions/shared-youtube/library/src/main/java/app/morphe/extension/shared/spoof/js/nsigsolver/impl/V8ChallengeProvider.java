@@ -10,6 +10,7 @@ import com.eclipsesource.v8.V8ScriptExecutionException;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -37,6 +38,10 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
     private ExecutorService v8Executor = Executors.newSingleThreadExecutor();
     private V8 v8Runtime;
     private int executeCount = 0;
+
+    // Performance instrumentation
+    private int warmupCallCount = 0;
+    private int runJsCallCount = 0;
 
     private V8ChallengeProvider() {}
 
@@ -67,20 +72,46 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
 
     @Override
     protected String runJsRuntime(String stdin) throws JsChallengeProviderError {
+        long warmupStart = System.nanoTime();
         warmup();
-        return runJS(stdin, false);
+        long warmupMs = (System.nanoTime() - warmupStart) / 1_000_000;
+
+        long execStart = System.nanoTime();
+        String result = runJS(stdin, false);
+        long execMs = (System.nanoTime() - execStart) / 1_000_000;
+
+        Logger.printDebug(() -> String.format(Locale.US,
+                "[Perf] runJsRuntime: warmup=%dms, runJS=%dms, total=%dms",
+                warmupMs, execMs, warmupMs + execMs));
+        return result;
     }
 
     private String runJS(String stdin, boolean warmup) throws JsChallengeProviderError {
+        final int callNum = ++runJsCallCount;
+        final long runJsStart = System.nanoTime();
+        final int stdinLen = stdin.length();
+
         try {
             String results = v8Executor.submit(() -> {
+                boolean runtimeCreated = false;
+                long createStart = System.nanoTime();
                 // Null checking and setting in the v8 runtime are done on the same thread
                 if (v8Runtime == null) {
                     v8Runtime = V8.createV8Runtime();
+                    runtimeCreated = true;
                 }
+                long createMs = (System.nanoTime() - createStart) / 1_000_000;
 
                 // Run js to get decipher results
+                long execStart = System.nanoTime();
                 String result = v8Runtime.executeStringScript(stdin);
+                long execMs = (System.nanoTime() - execStart) / 1_000_000;
+
+                final boolean created = runtimeCreated;
+                final int resultLen = result != null ? result.length() : 0;
+                Logger.printDebug(() -> String.format(Locale.US,
+                        "[Perf] runJS #%d (warmup=%s): runtimeCreated=%s, v8Create=%dms, v8Execute=%dms, stdinLen=%d, resultLen=%d, execCount=%d",
+                        callNum, warmup, created, createMs, execMs, stdinLen, resultLen, executeCount));
 
                 // The decipher function and global functions are remembered by the V8 runtime's Bytecode Caching
                 // This ensures that the V8 runtime is faster than other runtimes, such as QuickJS,
@@ -102,6 +133,10 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
                 return result;
             }).get();
 
+            long totalMs = (System.nanoTime() - runJsStart) / 1_000_000;
+            Logger.printDebug(() -> String.format(Locale.US,
+                    "[Perf] runJS #%d total (including executor overhead): %dms", callNum, totalMs));
+
             // The results of the warmup are not used anywhere
             if (warmup) {
                 return "";
@@ -115,6 +150,10 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
                 throw new JsChallengeProviderError(message);
             }
         } catch (InterruptedException | ExecutionException e) {
+            long totalMs = (System.nanoTime() - runJsStart) / 1_000_000;
+            Logger.printDebug(() -> String.format(Locale.US,
+                    "[Perf] runJS #%d failed after %dms", callNum, totalMs));
+
             Throwable cause = e.getCause();
             if (cause instanceof V8ScriptExecutionException v8e) {
                 if (v8e.getMessage() != null && v8e.getMessage().contains("Invalid or unexpected token")) {
@@ -133,6 +172,9 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
     }
 
     public void warmup() {
+        final int warmupNum = ++warmupCallCount;
+        final long warmupStart = System.nanoTime();
+
         // If v8Executor terminates for an unexpected reason, it will be recreated
         if (v8Executor.isShutdown() || v8Executor.isTerminated()) {
             try {
@@ -143,9 +185,24 @@ public class V8ChallengeProvider extends JsRuntimeChalBaseJCP {
         }
 
         try {
+            long constructStart = System.nanoTime();
+            String commonStdin = constructCommonStdin();
+            long constructMs = (System.nanoTime() - constructStart) / 1_000_000;
+            final int stdinLen = commonStdin.length();
+
+            long jsStart = System.nanoTime();
             // Declare a global function
-            runJS(constructCommonStdin(), true);
+            runJS(commonStdin, true);
+            long jsMs = (System.nanoTime() - jsStart) / 1_000_000;
+
+            long totalMs = (System.nanoTime() - warmupStart) / 1_000_000;
+            Logger.printDebug(() -> String.format(Locale.US,
+                    "[Perf] warmup #%d: constructCommonStdin=%dms (len=%d), runJS=%dms, totalTime=%dms",
+                    warmupNum, constructMs, stdinLen, jsMs, totalMs));
         } catch (Exception e) {
+            long totalMs = (System.nanoTime() - warmupStart) / 1_000_000;
+            Logger.printDebug(() -> String.format(Locale.US,
+                    "[Perf] warmup #%d failed after %dms", warmupNum, totalMs));
             // ignore warmup errors
         }
     }
